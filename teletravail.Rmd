@@ -1,0 +1,427 @@
+---
+title: "teletravail"
+author: "cb"
+date: "23/11/2021"
+output: html_document
+---
+
+
+## Objectifs
+
+
+
+## les packages utilisés
+
+On utilise principalement les ressources de `quanteda` et l'analyse factorielle des correspondances avec `Factominer`
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE,include=TRUE, warning=FALSE, message=FALSE)
+library(tidyverse)
+library(readr)
+
+library(lubridate)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+library(ggwordcloud)
+library(ggmosaic)
+library(rcompanion)
+
+library(cowplot)
+library ("FactoMineR")
+library(factoextra)
+library(seededlda)
+library(gam)
+```
+
+
+
+## lecture et recodage des données
+
+```{r 02}
+
+df <- read_csv("teletravail.csv") %>% rename(consequence=8)
+df$Sexe[df$Sexe=="Non-binaire"]<-"Femme"
+
+```
+
+## La distribution du Sexe
+
+générale
+
+```{r 03}
+
+
+g1<-ggplot(df, aes(x=part_vecu))+geom_histogram(binwidth = 1)+
+  labs( title= " Jours en télétravail depuis 2 ans", subtitle = "", caption = "", x= NULL, y = "Fréquence")+ylim(0,30)+facet_wrap(vars(Sexe), ncol = 1)
+
+g2<-ggplot(df, aes(x=part_actuelle))+geom_histogram(binwidth = 1)+
+  labs( title= " Jours en télétravail Actuel", subtitle = "", caption = "",  x= NULL, y = "")+ylim(0,30)+
+  facet_wrap(vars(Sexe), ncol = 1)
+
+g3<-ggplot(df, aes(x=part_espere))+geom_histogram(binwidth = 1)+
+  labs( title= " Jours souhaités en télétravail", subtitle = "", caption = "",  x= NULL,y = "")+ylim(0,30)+
+  facet_wrap(vars(Sexe), ncol = 1)
+
+plot_grid(g1, g2,g3, labels = c('A', 'B', 'C'), label_size = 12, ncol=3)+ylim(0,5)
+
+ggsave("Sexe1.jpg", plot=last_plot(), width = 20, height = 20, units = "cm")
+
+```
+
+
+
+
+```{r 02b}
+
+#library(ggmosaic)
+#library(rcompanion)
+#recodons les répondants
+
+df$part_espere<-as.factor(df$part_espere)
+t<-table(df$part_espere,df$Sexe)
+
+t
+chi2<-chisq.test(t)
+chi<-round(chi2$statistic,2)
+p<-round(chi2$p.value,3)
+V<-cramerV(t, digit=3)
+
+g1 <- ggplot(data = df) +
+  geom_mosaic(aes(x=product(part_espere ,Sexe), fill = part_espere))+  
+  theme(axis.text.x = element_text(angle = 45, hjust = -0.1, vjust = -0.2))+ 
+  theme(legend.position = "none")+
+  labs(title="", 
+       subtitle=paste0("chi2 =",chi, " p = ", p, " - V : ", V))
+g1
+```
+
+
+## Corpus
+
+On utilise quanteda . 
+
+```{r 04}
+# 1 définir le corpus
+
+df$text<-paste(df$Experience_passee, df$Experience_future, df$Consequence)
+
+corpus<-corpus(df,text_field ="text")
+
+
+# 2 tokeniser le corpus
+
+toks <- tokens(corpus, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+    tokens_remove(pattern = stopwords("fr")) %>% 
+  tokens_tolower()%>%
+#   tokens_remove(pattern="botanic.*")%>%
+  tokens_group(groups=Sexe)
+
+
+# 3 construire le dfm 
+
+dfm <- dfm(toks) %>%   
+  dfm_trim(min_termfreq = 1, verbose = FALSE)
+
+foo<-as.data.frame(dfm)
+
+# 4 afficher le wordcloud
+
+textplot_wordcloud(dfm,comparison = TRUE)
+
+```
+
+## Un autre wordcloud
+
+Une autre méthode avec meilleure préparation du texte. et surtout de la collocation
+
+
+pour le détail voir : https://quanteda.io/reference/textstat_collocations.html
+
+
+```{r 05}
+
+toks <- tokens(corpus, remove_punct = TRUE) %>% 
+  tokens_tolower()%>%
+  tokens_group(groups = Sexe)
+
+coloc <- textstat_collocations(toks, size = 2:4, min_count = 10) %>% filter(z>15)
+
+head(coloc, 20)
+
+
+toks2 <- tokens_compound(toks, pattern = coloc) %>%     
+  tokens_remove(pattern = stopwords("fr") )
+
+
+
+dfm <-toks2 %>%
+    tokens_group(groups = Sexe)%>% 
+  dfm()
+
+stat<- dfm %>% 
+  textstat_frequency(n = 50,  groups = Sexe)
+
+g_b<-ggplot(stat, aes(label = feature)) +
+  geom_text_wordcloud(aes(size=log(frequency), color=group)) +
+  theme_minimal()+
+  facet_wrap(vars(group))+
+  labs(title="Nuage des 50 mots les plus fréquents(Par groupes",
+       caption = "La taille des mots est proportionnelle au log de leurs fréquences")
+g_b
+ggsave("Sexe3.jpg", plot=last_plot(), width = 20, height = 20, units = "cm")
+
+```
+
+## Réseau sémantique
+
+
+sur la base de 
+
+https://kateto.net/networks-r-igraph/
+
+
+```{r 05b}
+
+toks2 <- tokens(corpus, remove_punct = TRUE, remove_numbers = TRUE) %>% 
+    tokens_remove(pattern = stopwords("fr")) %>% 
+  tokens_tolower()%>%
+   tokens_remove(pattern="marque", valuetype = "regex") 
+
+
+fcmat <- fcm(toks2, context = "window",window = 50L, tri = FALSE)
+
+feat <- names(topfeatures(fcmat, 500))
+
+set.seed(100)
+fcm_select(fcmat, pattern = feat) %>%
+    textplot_network(min_freq = 2,edge_color = "grey50",
+  edge_alpha = 0.2,vertex_labelsize=3)
+```
+
+
+```{r 06}
+
+# Create a dfm per group
+dfm <-toks2 %>%
+    tokens_group(groups = Sexe) %>% 
+  dfm()
+
+
+# Calculate keyness and determine "Promoteurs" as target group againts all other categories
+result_keyness <- textstat_keyness(dfm, target = "Homme")
+
+# Plot estimated word keyness
+g1<-textplot_keyness(result_keyness,   n = 25L, labelsize = 3,   show_legend = FALSE, 
+                     show_reference = TRUE,   color = c("Darkgreen", "gray"))+
+  labs(x=NULL)
+g1
+
+
+ggsave("Sexe4.jpg", plot=last_plot(), width = 20, height = 20, units = "cm")
+#  pour une comparaison deux à deux
+#   pres_corpus <- corpus_subset(corpus, Sexe %in% c("Détracteurs", "Promoteurs"))
+
+
+#plot_grid(g ,p,d, labels = c("", "", "", ""), label_size = 12, ncol = 2, nrow = )
+
+#ggsave("Sexe5.jpg", plot=last_plot(), width = 20, height = 20, units = "cm")
+
+
+```
+
+
+
+## Pos et dépendances syntaxiques
+
+
+```{r 10}
+library(cleanNLP)
+cnlp_init_udpipe(model_name = "french")
+annotate<-cnlp_annotate(df, text_name = "text",doc_name = "id", verbose = 1000)
+
+obj<-annotate$token
+ 
+ 
+
+```
+
+## Analyse de réseau sémantique restreinte aux adjectifs
+
+
+```{r 11, fig.width=12}
+df$doc_id<-as.numeric(rownames(df))
+
+
+source<-obj %>%select(doc_id,sid,tid, lemma)%>%rename(tid_source=tid,verbe=lemma)
+verbe_objet <-obj %>% 
+  filter(relation == "obj") %>% 
+  left_join(source, by = c("doc_id", "sid", "tid_source"))
+
+lemma<-verbe_objet %>% mutate(n=1) %>% group_by(lemma)%>%summarise(n=sum(n))
+verbe<-verbe_objet %>% mutate(n=1) %>% group_by(verbe)%>%summarise(n=sum(n))
+
+
+
+Edge<- table(verbe_objet$lemma, verbe_objet$verbe)
+Edge2<- as.data.frame(Edge)
+
+
+#graphe bipartite
+Edge<-subset(Edge2, Freq>0)   #ne garder que ceux qui sont effectifs
+
+#definition du graphe
+
+library(igraph)
+library(extrafont)
+fonts()
+
+g <- graph_from_data_frame(Edge, directed=FALSE, vertices=NULL)
+
+#définir les paramètres
+layout <- layout_with_mds(g, dim=2)
+V(g)$type <- bipartite.mapping(g)$type
+col = ifelse( V(g)$type, "blue", "black") # assign color by node type
+shape = ifelse(V(g)$type, "circle", "square") # assign shape by node type
+
+size=ifelse(V(g)$type, verbe$n,lemma$n)
+
+# Set a seed if you want reproducible results
+set.seed(42)
+
+#tracer le graphe
+plot(g,
+     vertex.label.color = col,
+     vertex.shape=shape,
+     vertex.label.family="Ink Free", 
+     vertex.size=0,
+     vertex.label.cex=log(size),
+     edge.arrow.size=0,
+     edge.width=1*(E(g)$Freq),
+     edge.curved=0.2
+     )
+
+
+
+
+
+
+```
+
+### autre version
+
+
+
+```{r 11, fig.width=12}
+df$doc_id<-as.numeric(rownames(df))
+
+
+source<-obj %>%select(doc_id,sid,tid, lemma)%>%rename(tid_source=tid,verbe=lemma)
+verbe_objet <-obj %>% 
+  filter(relation == "amod") %>% 
+  left_join(source, by = c("doc_id", "sid", "tid_source"))
+
+lemma<-verbe_objet %>% mutate(n=1) %>% group_by(lemma)%>%summarise(n=sum(n))
+verbe<-verbe_objet %>% mutate(n=1) %>% group_by(verbe)%>%summarise(n=sum(n))
+
+
+
+Edge<- table(verbe_objet$lemma, verbe_objet$verbe)
+Edge2<- as.data.frame(Edge)
+
+
+#graphe bipartite
+Edge<-subset(Edge2, Freq>0)   #ne garder que ceux qui sont effectifs
+
+#definition du graphe
+
+library(igraph)
+library(extrafont)
+fonts()
+
+g <- graph_from_data_frame(Edge, directed=FALSE, vertices=NULL)
+
+#définir les paramètres
+layout <- layout_with_mds(g, dim=2)
+V(g)$type <- bipartite.mapping(g)$type
+col = ifelse( V(g)$type, "blue", "black") # assign color by node type
+shape = ifelse(V(g)$type, "circle", "square") # assign shape by node type
+
+size=ifelse(V(g)$type, verbe$n,lemma$n)
+
+# Set a seed if you want reproducible results
+set.seed(42)
+
+#tracer le graphe
+plot(g,
+     vertex.label.color = col,
+     vertex.shape=shape,
+     vertex.label.family="Ink Free", 
+     vertex.size=0,
+     vertex.label.cex=log(size)*1.2,
+     edge.arrow.size=0,
+     edge.width=1*(E(g)$Freq),
+     edge.curved=0.2
+     )
+
+
+
+
+
+
+```
+
+
+## Un peu de topic analysis
+
+
+
+###¯ preparation des données
+
+```{r 07}
+# pre processing : 
+
+corpus<-corpus(df,text_field ="dfnnalite")
+
+toks <- tokens(corpus, remove_punct = TRUE)
+
+cols <- textstat_collocations(toks, size = 2:4, min_count = 20) %>% filter(z>20)
+
+toks2 <- tokens_compound(toks, pattern = cols) %>%     
+  tokens_remove(pattern = stopwords("fr") )
+
+dfm<-dfm(toks2)
+dfm<- dfm_trim(dfm, min_termfreq = 1, min_docfreq = 1)
+
+
+```
+
+estimation du modèle
+
+
+```{r 07b, eval=FALSE}
+
+library(seededlda)
+t1=Sys.time()
+
+set.seed(123)
+tmod_lda <- textmodel_lda(dfm, k = 5)
+
+t2=Sys.time()
+t=t2-t1
+t
+
+#lister les mots les plus associés
+seededlda::terms(tmod_lda,5)
+
+df$topic <- seededlda::topics(tmod_lda)
+
+#saveRDS(tmod_lda,"lda.rds")
+
+#saveRDS(dfm,"topic.rds")
+```
+
+
+
+
